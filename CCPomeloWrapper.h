@@ -1,6 +1,5 @@
 //
 //  CCPomeloWrapper.h
-//  SGXXZ
 //
 //  Created by laoyur@126.com on 13-11-22.
 //
@@ -84,6 +83,9 @@ public:
     //stop current connection
     void stop();
     
+    //callback when connection lost
+    void setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector);
+    
     //send request to server
     //@return: 0--request sent succeeded; others--request sent failed
     int request(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloReqResultHandler pCallbackSelector);
@@ -91,10 +93,19 @@ public:
     //send notify to server
     //@return: 0--notify sent succeeded; others--notify sent failed
     int notify(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloNtfResultHandler pCallbackSelector);
-  
+    
     //listen to event
+    //only one listener allowed for one event currently
     //@return: 0--add listener succeeded; others--add listener failed
     int addListener(const char* event, cocos2d::CCObject* pCallbackTarget, PomeloEventHandler pCallbackSelector);
+    
+    //remove listener for specific event
+    void removeListener(const char* event);
+    
+    //remove all listeners for all events
+    void removeAllListeners();
+    
+    
     
 private:
     CCPomeloWrapper();
