@@ -1,6 +1,5 @@
 //
 //  CCPomeloWrapper.cpp
-//  SGXXZ
 //
 //  Created by laoyur@126.com on 13-11-22.
 //
@@ -59,7 +58,7 @@ CCPomeloEvent::CCPomeloEvent()
 }
 class CCPomeloImpl : public cocos2d::CCObject
 {
-   
+    
 public:
     CCPomeloImpl();
     virtual ~CCPomeloImpl();
@@ -72,11 +71,16 @@ public:
     
     void stop();
     
+    void setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector);
+    
     int request(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloReqResultHandler pCallbackSelector);
     
     int notify(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloNtfResultHandler pCallbackSelector);
     
     int listen(const char* event, cocos2d::CCObject* pCallbackTarget, PomeloEventHandler pCallbackSelector);
+    
+    void removeListener(const char* event);
+    void removeAllListeners();
     
 private:
     //callbacks for libpomelo
@@ -84,6 +88,7 @@ private:
     static void requestCallback(pc_request_t *request, int status, json_t *docs);
     static void notifyCallback(pc_notify_t *ntf, int status);
     static void eventCallback(pc_client_t *client, const char *event, void *data);
+    static void disconnectedCallback(pc_client_t *client, const char *event, void *data);
     
 private:
     void ccDispatcher(float delta);
@@ -102,7 +107,7 @@ private:
     
     void clearReqResource();
     void clearNtfResource();
-    void clearEventResource();
+    void clearAllPendingEvents();
     
 private:
     CCPomeloStatus      mStatus;
@@ -112,15 +117,18 @@ private:
     bool                    mAsyncConnDispatchPending;
     int                     mAsyncConnStatus;
     
-    map<pc_request_t*,_PomeloUser*> mReqMap;
+    CCObject*           mDisconnectCbTarget;
+    SEL_CallFunc        mDisconnectCbSelector;
+    
+    map<pc_request_t*,_PomeloUser*> mReqUserMap;
     pthread_mutex_t  mReqResultQueueMutex;
     queue<_PomeloRequestResult*> mReqResultQueue;
     
-    map<string,_PomeloUser*> mEventMap;
+    map<string,_PomeloUser*> mEventUserMap;
     pthread_mutex_t  mEventQueueMutex;
     queue<_PomeloEvent*> mEventQueue;
     
-    map<pc_notify_t*,_PomeloUser*> mNtfMap;
+    map<pc_notify_t*,_PomeloUser*> mNtfUserMap;
     pthread_mutex_t  mNtfResultQueueMutex;
     queue<_PomeloNotifyResult*> mNtfResultQueue;
 };
@@ -137,6 +145,9 @@ void CCPomeloImpl::dispatchAsyncConnCallback()
     if(mAsyncConnDispatchPending)
     {
         mAsyncConnDispatchPending = false;
+        mStatus = EPomeloConnected;
+        
+        pc_add_listener(mClient, PC_EVENT_DISCONNECT, disconnectedCallback);
         
         _PomeloUser* user = mAsyncConnUser;
         if(user && user->target && user->connSel)
@@ -159,10 +170,10 @@ void CCPomeloImpl::dispatchRequestCallbacks()
     {
         _PomeloUser* user = NULL;
         
-        if(mReqMap.find(rst->request) != mReqMap.end())
+        if(mReqUserMap.find(rst->request) != mReqUserMap.end())
         {
-            user = mReqMap[rst->request];
-            mReqMap.erase(rst->request);
+            user = mReqUserMap[rst->request];
+            mReqUserMap.erase(rst->request);
         }
         
         //here is the good place to perform callback
@@ -187,10 +198,10 @@ void CCPomeloImpl::dispatchNotifyCallbacks()
     {
         _PomeloUser* user = NULL;
         
-        if(mNtfMap.find(rst->notify) != mNtfMap.end())
+        if(mNtfUserMap.find(rst->notify) != mNtfUserMap.end())
         {
-            user = mNtfMap[rst->notify];
-            mNtfMap.erase(rst->notify);
+            user = mNtfUserMap[rst->notify];
+            mNtfUserMap.erase(rst->notify);
         }
         
         if(user && user->target && user->ntfSel)
@@ -198,7 +209,7 @@ void CCPomeloImpl::dispatchNotifyCallbacks()
             CCPomeloNotifyResult result;
             result.notifyRoute = rst->notify->route;
             result.status = rst->status;
-
+            
             PomeloNtfResultHandler sel = user->ntfSel;
             (user->target->*sel)(result);
         }
@@ -211,24 +222,35 @@ void CCPomeloImpl::dispatchEventCallbacks()
     _PomeloEvent* rst = popEvent();
     if(rst)
     {
-        _PomeloUser* user = NULL;
-        
-        if(mEventMap.find(rst->event) != mEventMap.end())
+        if(rst->event.compare(PC_EVENT_DISCONNECT) == 0)
         {
-            user = mEventMap[rst->event];
-            mEventMap.erase(rst->event);
+            //connection lost
+            stop(); //release data
+            
+            if(mDisconnectCbTarget && mDisconnectCbSelector)
+            {
+                (mDisconnectCbTarget->*mDisconnectCbSelector)();
+            }
         }
-        
-        if(user && user->target && user->evtSel)
+        else    //for customized events
         {
-            CCPomeloEvent result;
-            result.event = rst->event;
-            result.jsonMsg = rst->data;
-
-            PomeloEventHandler sel = user->evtSel;
-            (user->target->*sel)(result);
+            _PomeloUser* user = NULL;
+            
+            if(mEventUserMap.find(rst->event) != mEventUserMap.end())
+            {
+                user = mEventUserMap[rst->event];
+            }
+            
+            if(user && user->target && user->evtSel)
+            {
+                CCPomeloEvent result;
+                result.event = rst->event;
+                result.jsonMsg = rst->data;
+                
+                PomeloEventHandler sel = user->evtSel;
+                (user->target->*sel)(result);
+            }
         }
-        delete user;
         delete rst;
     }
 }
@@ -312,6 +334,8 @@ void CCPomeloImpl::connectAsnycCallback(pc_connect_t* conn_req, int status)
     {
         gPomelo->_theMagic->mAsyncConnStatus = status;
         gPomelo->_theMagic->mAsyncConnDispatchPending = true;
+        
+        CCDirector::sharedDirector()->getScheduler()->resumeTarget(gPomelo->_theMagic);
     }
 }
 
@@ -343,7 +367,14 @@ void CCPomeloImpl::eventCallback(pc_client_t *client, const char *event, void *d
     gPomelo->_theMagic->pushEvent(rst);
     free(json);
 }
-
+void CCPomeloImpl::disconnectedCallback(pc_client_t *client, const char *event, void *data)
+{
+    _PomeloEvent* rst = new _PomeloEvent();
+    rst->event = event;
+    gPomelo->_theMagic->pushEvent(rst);
+    
+    free(data); //data === NULL ?? fixme
+}
 CCPomeloImpl::~CCPomeloImpl()
 {
     //just in case
@@ -354,7 +385,9 @@ CCPomeloImpl::CCPomeloImpl()
 :mStatus(EPomeloStopped),
 mClient(NULL),
 mAsyncConnUser(NULL),
-mAsyncConnDispatchPending(false)
+mAsyncConnDispatchPending(false),
+mDisconnectCbTarget(NULL),
+mDisconnectCbSelector(NULL)
 {
     //paused by default
     CCDirector::sharedDirector()->getScheduler()->scheduleSelector(schedule_selector(CCPomeloImpl::ccDispatcher), this, 0, true);
@@ -403,6 +436,8 @@ int CCPomeloImpl::connect(const char* host, int port)
     else
     {
         mStatus = EPomeloConnected;
+        
+        pc_add_listener(mClient, PC_EVENT_DISCONNECT, disconnectedCallback);
         
         CCDirector::sharedDirector()->getScheduler()->resumeTarget(this);
     }
@@ -459,7 +494,7 @@ int CCPomeloImpl::request(const char* route, const std::string& msg, cocos2d::CC
     _PomeloUser* user = new _PomeloUser();
     user->target = pCallbackTarget;
     user->reqSel = pCallbackSelector;
-    mReqMap[req] = user;    //ownership transferred
+    mReqUserMap[req] = user;    //ownership transferred
     
     json_error_t err;
     json_t* j = json_loads(msg.c_str(), JSON_COMPACT, &err);
@@ -470,16 +505,16 @@ int CCPomeloImpl::notify(const char* route, const std::string& msg, cocos2d::CCO
 {
     if(mStatus != EPomeloConnected)
         return -1;
-    
+
     pc_notify_t *ntf = pc_notify_new();
     _PomeloUser* user = new _PomeloUser();
     user->target = pCallbackTarget;
     user->ntfSel = pCallbackSelector;
-    mNtfMap[ntf] = user;    //ownership transferred
+    mNtfUserMap[ntf] = user;    //ownership transferred
     
     json_error_t err;
     json_t* j = json_loads(msg.c_str(), JSON_COMPACT, &err);
-
+    
     return pc_notify(mClient, ntf, route, j, notifyCallback);
 }
 
@@ -487,56 +522,89 @@ int CCPomeloImpl::listen(const char* event, cocos2d::CCObject* pCallbackTarget, 
 {
     if(mStatus != EPomeloConnected)
         return -1;
-
-    if(mEventMap.find(event) != mEventMap.end())
-    {
-        //the event already in listening
-        delete mEventMap[event];
-    }
     
-    _PomeloUser *user = new _PomeloUser();
-    user->target = pCallbackTarget;
-    user->evtSel = pCallbackSelector;
+    removeListener(event);
+    
+    int ret = pc_add_listener(mClient, event, eventCallback);
+    if(ret == 0)
+    {
+        _PomeloUser *user = new _PomeloUser();
+        user->target = pCallbackTarget;
+        user->evtSel = pCallbackSelector;
+        
+        mEventUserMap[event] = user;
+    }
 
-    mEventMap[event] = user;
-    return pc_add_listener(mClient, event, eventCallback);
+    return ret;
 }
 
+void CCPomeloImpl::removeListener(const char* event)
+{
+    if(mEventUserMap.find(event) != mEventUserMap.end())
+    {
+        pc_remove_listener(mClient, event, eventCallback);
+        
+        delete mEventUserMap[event];
+        mEventUserMap.erase(event);
+    }
+}
+void CCPomeloImpl::removeAllListeners()
+{
+    if(!mEventUserMap.empty())
+    {
+        map<string,_PomeloUser*>::iterator it;
+        for (it = mEventUserMap.begin(); it != mEventUserMap.end(); it++)
+        {
+            string event = (*it).first;
+            pc_remove_listener(mClient, event.c_str(), eventCallback);
+            
+            delete mEventUserMap[event];
+        }
+    }
+    mEventUserMap.clear();
+    
+    //drop all pending callback events
+    clearAllPendingEvents();
+}
 void CCPomeloImpl::stop()
 {
-    if(mClient)
-    {
-        //you should not call pc_client_stop() in main thread
-        //https://github.com/NetEase/pomelo/issues/208
-        
-        pc_client_destroy(mClient);
-        mClient = NULL;
-    }
-
-    mStatus = EPomeloStopped;
-
     delete mAsyncConnUser;
     mAsyncConnUser = NULL;
     mAsyncConnDispatchPending = false;
     
     clearReqResource();
     clearNtfResource();
-    clearEventResource();
+    clearAllPendingEvents();
     
     CCDirector::sharedDirector()->getScheduler()->pauseTarget(this);
+    
+    if(mClient)
+    {
+        pc_remove_listener(mClient, PC_EVENT_DISCONNECT, disconnectedCallback);
+        
+        //you should not call pc_client_stop() in main thread
+        //https://github.com/NetEase/pomelo/issues/208
+        pc_client_destroy(mClient);
+        mClient = NULL;
+    }
+    mStatus = EPomeloStopped;
 }
-
+void CCPomeloImpl::setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector)
+{
+    mDisconnectCbTarget = pTarget;
+    mDisconnectCbSelector = pSelector;
+}
 void CCPomeloImpl::clearReqResource()
 {
     map<pc_request_t*, _PomeloUser*>::iterator reqIt;
-    for (reqIt = mReqMap.begin(); reqIt != mReqMap.end(); reqIt++)
+    for (reqIt = mReqUserMap.begin(); reqIt != mReqUserMap.end(); reqIt++)
     {
         pc_request_t* req = (*reqIt).first;
         _PomeloUser* user = (*reqIt).second;
         pc_request_destroy(req);
         delete user;
     }
-    mReqMap.clear();
+    mReqUserMap.clear();
     
     _PomeloRequestResult* reqRst = NULL;
     while((reqRst = popReqResult(false)))
@@ -549,14 +617,14 @@ void CCPomeloImpl::clearReqResource()
 void CCPomeloImpl::clearNtfResource()
 {
     map<pc_notify_t*, _PomeloUser*>::iterator it;
-    for (it = mNtfMap.begin(); it != mNtfMap.end(); it++)
+    for (it = mNtfUserMap.begin(); it != mNtfUserMap.end(); it++)
     {
         pc_notify_t* ntf = (*it).first;
         _PomeloUser* user = (*it).second;
         pc_notify_destroy(ntf);
         delete user;
     }
-    mNtfMap.clear();
+    mNtfUserMap.clear();
     
     _PomeloNotifyResult* rst = NULL;
     while((rst = popNtfResult(false)))
@@ -566,11 +634,22 @@ void CCPomeloImpl::clearNtfResource()
     queue<_PomeloNotifyResult*> empty;
     swap(mNtfResultQueue, empty);
 }
-void CCPomeloImpl::clearEventResource()
+void CCPomeloImpl::clearAllPendingEvents()
 {
+    pthread_mutex_lock(&mEventQueueMutex);
+    _PomeloEvent *rst = NULL;
+    while (!mEventQueue.empty())
+    {
+        rst = mEventQueue.front();
+        delete rst;
+        rst = NULL;
+        mEventQueue.pop();
+    }
+    pthread_mutex_unlock(&mEventQueueMutex);
     
+    queue<_PomeloEvent*> empty;
+    swap(mEventQueue, empty);
 }
-
 //============================================================
 CCPomeloWrapper* CCPomeloWrapper::getInstance()
 {
@@ -605,6 +684,11 @@ void CCPomeloWrapper::stop()
     _theMagic->stop();
 }
 
+void CCPomeloWrapper::setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector)
+{
+    _theMagic->setDisconnectedCallback(pTarget, pSelector);
+}
+
 int CCPomeloWrapper::request(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloReqResultHandler pCallbackSelector)
 {
     return _theMagic->request(route, msg, pCallbackTarget, pCallbackSelector);
@@ -619,7 +703,14 @@ int CCPomeloWrapper::addListener(const char* event, cocos2d::CCObject* pCallback
 {
     return _theMagic->listen(event, pCallbackTarget, pCallbackSelector);
 }
-
+void CCPomeloWrapper::removeListener(const char* event)
+{
+    _theMagic->removeListener(event);
+}
+void CCPomeloWrapper::removeAllListeners()
+{
+    _theMagic->removeAllListeners();
+}
 CCPomeloWrapper::CCPomeloWrapper()
 {
     _theMagic = new CCPomeloImpl();
