@@ -12,11 +12,15 @@ How to use
 1. add CCPomeloWrapper.cpp/h to your project
 2. sample code for connecting with chatofpomelo-websocket:
 
-connect to gate:
+
 ```
+
+//connect to gate:
 void SampleScene::testMenuClicked(cocos2d::CCObject* pSender)
 {
-    if(CCPomeloWrapper::getInstance()->connect("dev1.laoyur.ml", 3014)) //you can use my sample dev server to test
+    //you can use my sample dev server to test
+    //and browser client is also available here: http://dev1.laoyur.ml:3001/
+    if(CCPomeloWrapper::getInstance()->connect("dev1.laoyur.ml", 3014)) 
     {
         CCLOG("connect failed ");
     }
