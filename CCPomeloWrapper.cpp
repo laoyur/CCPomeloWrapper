@@ -188,6 +188,10 @@ void CCPomeloImpl::dispatchRequestCallbacks()
             (user->target->*sel)(result);
         }
         delete user;
+        
+        //fixme
+        json_decref(rst->request->msg);
+        pc_request_destroy(rst->request);
         delete rst;
     }
 }
@@ -214,6 +218,10 @@ void CCPomeloImpl::dispatchNotifyCallbacks()
             (user->target->*sel)(result);
         }
         delete user;
+        
+        //fixme
+        json_decref(rst->notify->msg);
+        pc_notify_destroy(rst->notify);
         delete rst;
     }
 }
@@ -498,7 +506,9 @@ int CCPomeloImpl::request(const char* route, const std::string& msg, cocos2d::CC
     
     json_error_t err;
     json_t* j = json_loads(msg.c_str(), JSON_COMPACT, &err);
-    return pc_request(mClient, req, route, j, requestCallback);
+    int ret = pc_request(mClient, req, route, j, requestCallback);
+    //json_decref(j);
+    return ret;
 }
 
 int CCPomeloImpl::notify(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloNtfResultHandler pCallbackSelector)
@@ -514,8 +524,9 @@ int CCPomeloImpl::notify(const char* route, const std::string& msg, cocos2d::CCO
     
     json_error_t err;
     json_t* j = json_loads(msg.c_str(), JSON_COMPACT, &err);
-    
-    return pc_notify(mClient, ntf, route, j, notifyCallback);
+    int ret = pc_notify(mClient, ntf, route, j, notifyCallback);
+    //json_decref(j);
+    return ret;
 }
 
 int CCPomeloImpl::listen(const char* event, cocos2d::CCObject* pCallbackTarget, PomeloEventHandler pCallbackSelector)
@@ -601,6 +612,11 @@ void CCPomeloImpl::clearReqResource()
     {
         pc_request_t* req = (*reqIt).first;
         _PomeloUser* user = (*reqIt).second;
+        
+        //fixme
+        //pc_request_destroy does NOT deal with req->msg
+        //so we need to free it manually
+        json_decref(req->msg);
         pc_request_destroy(req);
         delete user;
     }
@@ -621,6 +637,10 @@ void CCPomeloImpl::clearNtfResource()
     {
         pc_notify_t* ntf = (*it).first;
         _PomeloUser* user = (*it).second;
+        //fixme
+        //pc_notify_destroy does NOT deal with ntf->msg
+        //so we need to free it manually
+        json_decref(ntf->msg);
         pc_notify_destroy(ntf);
         delete user;
     }
