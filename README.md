@@ -18,8 +18,7 @@ How to use
 //connect to gate:
 void SampleScene::testMenuClicked(cocos2d::CCObject* pSender)
 {
-    //you can use my sample dev server to test
-    //and browser client is also available here: http://dev1.laoyur.ml:3001/
+    //***DO NOT use my sample server directly. It is not available anymore***
     if(CCPomeloWrapper::getInstance()->connect("dev1.laoyur.ml", 3014)) 
     {
         CCLOG("connect failed ");
@@ -54,6 +53,12 @@ void SampleScene::queryEntryCB(const CCPomeloRequestResult& result)
             
             //connect to connector
             //we use async connect version here
+            CCPomeloWrapper::getInstance()->connectAsnyc(host.c_str(), port, this, pomelo_async_conn_cb_selector(SampleScene::connectCB));
+            
+            //FYI: you can call stop() when async-conn is in progress
+            CCPomeloWrapper::getInstance()->stop();
+            
+            //actually connect to the connector
             CCPomeloWrapper::getInstance()->connectAsnyc(host.c_str(), port, this, pomelo_async_conn_cb_selector(SampleScene::connectCB));
             
             //sync connect version
