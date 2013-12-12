@@ -130,7 +130,7 @@ void SampleScene::onConnLost()
     CCLOG("connection lost");
 }
 
-
+```
 TODO:
 ===============
 support c++11 blocks as callback function
