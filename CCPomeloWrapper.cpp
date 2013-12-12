@@ -116,20 +116,22 @@ private:
     _PomeloUser*            mAsyncConnUser;
     bool                    mAsyncConnDispatchPending;
     int                     mAsyncConnStatus;
+    pc_connect_t*       mAsyncConn; //by ref
     
+    pthread_mutex_t     mMutex;
     CCObject*           mDisconnectCbTarget;
     SEL_CallFunc        mDisconnectCbSelector;
     
     map<pc_request_t*,_PomeloUser*> mReqUserMap;
-    pthread_mutex_t  mReqResultQueueMutex;
+    //pthread_mutex_t  mReqResultQueueMutex;
     queue<_PomeloRequestResult*> mReqResultQueue;
     
     map<string,_PomeloUser*> mEventUserMap;
-    pthread_mutex_t  mEventQueueMutex;
+    //pthread_mutex_t  mEventQueueMutex;
     queue<_PomeloEvent*> mEventQueue;
     
     map<pc_notify_t*,_PomeloUser*> mNtfUserMap;
-    pthread_mutex_t  mNtfResultQueueMutex;
+    //pthread_mutex_t  mNtfResultQueueMutex;
     queue<_PomeloNotifyResult*> mNtfResultQueue;
 };
 
@@ -145,7 +147,6 @@ void CCPomeloImpl::dispatchAsyncConnCallback()
     if(mAsyncConnDispatchPending)
     {
         mAsyncConnDispatchPending = false;
-        mStatus = EPomeloConnected;
         
         pc_add_listener(mClient, PC_EVENT_DISCONNECT, disconnectedCallback);
         
@@ -265,115 +266,160 @@ void CCPomeloImpl::dispatchEventCallbacks()
 
 void CCPomeloImpl::pushReqResult(_PomeloRequestResult* reqResult)
 {
-    pthread_mutex_lock(&mReqResultQueueMutex);
     mReqResultQueue.push(reqResult);
-    pthread_mutex_unlock(&mReqResultQueueMutex);
 }
 void CCPomeloImpl::pushNtfResult(_PomeloNotifyResult* ntfResult)
 {
-    pthread_mutex_lock(&mNtfResultQueueMutex);
     mNtfResultQueue.push(ntfResult);
-    pthread_mutex_unlock(&mNtfResultQueueMutex);
 }
 void CCPomeloImpl::pushEvent(_PomeloEvent* event)
 {
-    pthread_mutex_lock(&mEventQueueMutex);
     mEventQueue.push(event);
-    pthread_mutex_unlock(&mEventQueueMutex);
 }
 
-_PomeloRequestResult* CCPomeloImpl::popReqResult(bool lock /*= true*/)
+_PomeloRequestResult* CCPomeloImpl::popReqResult(bool lock/* = true*/)
 {
+    _PomeloRequestResult* rst = NULL;
+    if(lock)
+        pthread_mutex_lock(&mMutex);
     if (mReqResultQueue.size() > 0)
     {
-        if(lock)
-            pthread_mutex_lock(&mReqResultQueueMutex);
-        _PomeloRequestResult *rst = mReqResultQueue.front();
+        rst = mReqResultQueue.front();
         mReqResultQueue.pop();
-        if(lock)
-            pthread_mutex_unlock(&mReqResultQueueMutex);
-        return rst;
     }
-    else
-    {
-        return  NULL;
-    }
+    if(lock)
+        pthread_mutex_unlock(&mMutex);
+    return rst;
 }
-_PomeloNotifyResult* CCPomeloImpl::popNtfResult(bool lock /*= true*/)
+_PomeloNotifyResult* CCPomeloImpl::popNtfResult(bool lock/* = true*/)
 {
+    _PomeloNotifyResult* rst = NULL;
+    if(lock)
+        pthread_mutex_lock(&mMutex);
     if (mNtfResultQueue.size() > 0)
     {
-        if(lock)
-            pthread_mutex_lock(&mNtfResultQueueMutex);
-        _PomeloNotifyResult *rst = mNtfResultQueue.front();
+        rst = mNtfResultQueue.front();
         mNtfResultQueue.pop();
-        if(lock)
-            pthread_mutex_unlock(&mNtfResultQueueMutex);
-        return rst;
     }
-    else
-    {
-        return  NULL;
-    }
+    if(lock)
+        pthread_mutex_unlock(&mMutex);
+    return rst;
 }
-_PomeloEvent* CCPomeloImpl::popEvent(bool lock /*= true*/)
+_PomeloEvent* CCPomeloImpl::popEvent(bool lock/* = true*/)
 {
+    _PomeloEvent* evt = NULL;
+    if(lock)
+        pthread_mutex_lock(&mMutex);
     if (mEventQueue.size() > 0)
     {
-        if(lock)
-            pthread_mutex_lock(&mEventQueueMutex);
-        _PomeloEvent *rst = mEventQueue.front();
+        evt = mEventQueue.front();
         mEventQueue.pop();
-        if(lock)
-            pthread_mutex_unlock(&mEventQueueMutex);
-        return rst;
     }
-    else
-    {
-        return  NULL;
-    }
+    if(lock)
+        pthread_mutex_unlock(&mMutex);
+    return evt;
 }
 
 void CCPomeloImpl::connectAsnycCallback(pc_connect_t* conn_req, int status)
 {
-    pc_connect_req_destroy(conn_req);
+    //CCLog("connectAsnycCallback in");
     
-    if(gPomelo->status() == EPomeloConnecting)
+    pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
+    
+    if(gPomelo->_theMagic->mAsyncConn != conn_req)
     {
+        //this callback should be ignored
+        pc_client_t* client = conn_req->client;
+        pc_connect_req_destroy(conn_req);
+        
+        //fixme: pomelo forum guys said that
+        //we should not use pc_client_destory in worker thread
+        pc_client_stop(client);
+    }
+    else
+    {
+        pc_connect_req_destroy(conn_req);
+
+        gPomelo->_theMagic->mStatus = EPomeloConnected;
         gPomelo->_theMagic->mAsyncConnStatus = status;
         gPomelo->_theMagic->mAsyncConnDispatchPending = true;
+        gPomelo->_theMagic->mAsyncConn = NULL;
         
         CCDirector::sharedDirector()->getScheduler()->resumeTarget(gPomelo->_theMagic);
     }
+
+    pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
+    //CCLog("connectAsnycCallback out");
 }
 
 void CCPomeloImpl::requestCallback(pc_request_t *request, int status, json_t *docs)
 {
-    char* json = json_dumps(docs, JSON_COMPACT);
-    _PomeloRequestResult* rst = new _PomeloRequestResult();
-    rst->request = request;
-    if(json)
-        rst->resp = json;
-    rst->status = status;
-    gPomelo->_theMagic->pushReqResult(rst);
-    free(json);
+    //CCLog("requestCallback in");
+    pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
+    
+    if(gPomelo->status() == EPomeloConnected)
+    {
+        char* json = json_dumps(docs, JSON_COMPACT);
+        _PomeloRequestResult* rst = new _PomeloRequestResult();
+        rst->request = request;
+        if(json)
+            rst->resp = json;
+        rst->status = status;
+        gPomelo->_theMagic->pushReqResult(rst);
+        free(json);
+    }
+    else
+    {
+        json_decref(request->msg);
+        pc_request_destroy(request);
+    }
+
+    pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
+    //CCLog("requestCallback out");
 }
 void CCPomeloImpl::notifyCallback(pc_notify_t *ntf, int status)
 {
-    _PomeloNotifyResult* rst = new _PomeloNotifyResult();
-    rst->notify = ntf;
-    rst->status = status;
-    gPomelo->_theMagic->pushNtfResult(rst);
+    //CCLog("notifyCallback in");
+    pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
+    
+    if(gPomelo->status() == EPomeloConnected)
+    {
+        _PomeloNotifyResult* rst = new _PomeloNotifyResult();
+        rst->notify = ntf;
+        rst->status = status;
+        gPomelo->_theMagic->pushNtfResult(rst);
+    }
+    else
+    {
+        json_decref(ntf->msg);
+        pc_notify_destroy(ntf);
+    }
+    
+    pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
+    //CCLog("notifyCallback out");
 }
 void CCPomeloImpl::eventCallback(pc_client_t *client, const char *event, void *data)
 {
-    char* json = json_dumps((json_t*)data, JSON_COMPACT);
-    _PomeloEvent* rst = new _PomeloEvent();
-    rst->event = event;
-    if(json)
-        rst->data = json;
-    gPomelo->_theMagic->pushEvent(rst);
-    free(json);
+    //CCLog("eventCallback in");
+    pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
+    
+    if(gPomelo->status() == EPomeloConnected)
+    {
+        char* json = json_dumps((json_t*)data, JSON_COMPACT);
+        _PomeloEvent* rst = new _PomeloEvent();
+        rst->event = event;
+        if(json)
+            rst->data = json;
+        gPomelo->_theMagic->pushEvent(rst);
+        free(json);
+    }
+    else
+    {
+
+    }
+    
+    pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
+    //CCLog("eventCallback in");
 }
 void CCPomeloImpl::disconnectedCallback(pc_client_t *client, const char *event, void *data)
 {
@@ -394,16 +440,14 @@ CCPomeloImpl::CCPomeloImpl()
 mClient(NULL),
 mAsyncConnUser(NULL),
 mAsyncConnDispatchPending(false),
+mAsyncConn(NULL),
 mDisconnectCbTarget(NULL),
 mDisconnectCbSelector(NULL)
 {
     //paused by default
     CCDirector::sharedDirector()->getScheduler()->scheduleSelector(schedule_selector(CCPomeloImpl::ccDispatcher), this, 0, true);
     
-    
-    pthread_mutex_init(&mReqResultQueueMutex, NULL);
-    pthread_mutex_init(&mNtfResultQueueMutex, NULL);
-    pthread_mutex_init(&mEventQueueMutex, NULL);
+    pthread_mutex_init(&mMutex, NULL);
 }
 
 CCPomeloStatus CCPomeloImpl::status() const
@@ -475,12 +519,14 @@ int CCPomeloImpl::connectAsnyc(const char* host, int port, cocos2d::CCObject* pC
     stop();
     mClient = pc_client_new();
     
-    pc_connect_t* async = pc_connect_req_new(&address);
-    int ret = pc_client_connect2(mClient, async, connectAsnycCallback);
+    mAsyncConn = pc_connect_req_new(&address);
+    int ret = pc_client_connect2(mClient, mAsyncConn, connectAsnycCallback);
     if(ret)
     {
+        pc_connect_req_destroy(mAsyncConn);
         pc_client_destroy(mClient);
         mClient = NULL;
+        mAsyncConn = NULL;
     }
     else
     {
@@ -575,10 +621,15 @@ void CCPomeloImpl::removeAllListeners()
     mEventUserMap.clear();
     
     //drop all pending callback events
+    pthread_mutex_lock(&mMutex);
     clearAllPendingEvents();
+    pthread_mutex_unlock(&mMutex);
 }
 void CCPomeloImpl::stop()
 {
+    //CCLog("stop in");
+    pthread_mutex_lock(&mMutex);
+    
     delete mAsyncConnUser;
     mAsyncConnUser = NULL;
     mAsyncConnDispatchPending = false;
@@ -593,12 +644,25 @@ void CCPomeloImpl::stop()
     {
         pc_remove_listener(mClient, PC_EVENT_DISCONNECT, disconnectedCallback);
         
-        //you should not call pc_client_stop() in main thread
-        //https://github.com/NetEase/pomelo/issues/208
-        pc_client_destroy(mClient);
+        if(mStatus == EPomeloConnecting)
+        {
+            //fixme: libuv crashes if we destory pc_connect_t or destory
+            //pc_client_t when libpomelo is connecting
+            //so we simply create a new pc_client_t and ignore
+            //the old pc_connect_t
+        }
+        else
+        {
+            //you should not call pc_client_stop() in main thread
+            //https://github.com/NetEase/pomelo/issues/208
+            pc_client_destroy(mClient);
+        }
+        mAsyncConn = NULL;
         mClient = NULL;
     }
     mStatus = EPomeloStopped;
+    pthread_mutex_unlock(&mMutex);
+    //CCLog("stop out");
 }
 void CCPomeloImpl::setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector)
 {
@@ -656,16 +720,12 @@ void CCPomeloImpl::clearNtfResource()
 }
 void CCPomeloImpl::clearAllPendingEvents()
 {
-    pthread_mutex_lock(&mEventQueueMutex);
-    _PomeloEvent *rst = NULL;
     while (!mEventQueue.empty())
     {
-        rst = mEventQueue.front();
+        _PomeloEvent* rst = mEventQueue.front();
         delete rst;
-        rst = NULL;
         mEventQueue.pop();
     }
-    pthread_mutex_unlock(&mEventQueueMutex);
     
     queue<_PomeloEvent*> empty;
     swap(mEventQueue, empty);
