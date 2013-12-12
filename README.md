@@ -134,5 +134,7 @@ void SampleScene::onConnLost()
 TODO:
 ===============
 support c++11 blocks as callback function
+
 support async dns resolving for async-connection
+
 support multiple listeners to the same event
