@@ -18,7 +18,7 @@ Great thanks to https://github.com/xdxttt/CCPomelo
 ```
     //连接gate
     CCPomeloWrapper* pomelo = CCPomeloWrapper::getInstance();
-    pomelo->connectAsnyc("laoyur.ml", 3014, [=](int err){
+    pomelo->connectAsnyc("yourserver.com", 3014, [=](int err){
         if(err == 0)
         {
             //gate连接成功
