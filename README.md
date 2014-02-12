@@ -9,7 +9,7 @@ Great thanks to https://github.com/xdxttt/CCPomelo
 
 如何使用
 ===============
-0. 配置好你的cocos2d-x+libpomelo工程，可以参考
+0. 配置好你的cocos2d-x+libpomelo工程，可以参考http://laoyur.ml/?p=318
 1. 下载CCPomeloWrapper.cpp/h到你的项目中
 2. 使用以下示例代码和chatofpomelo-websocket服务端通信
 
