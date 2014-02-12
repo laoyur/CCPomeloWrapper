@@ -2,6 +2,7 @@ CCPomeloWrapper
 ===============
 
 A simple libpomelo wrapper for cocos2d-x
+
 Version: 0.9 2014/02/12
 
 Great thanks to https://github.com/xdxttt/CCPomelo
@@ -233,7 +234,6 @@ void SampleScene::onConnLost()
 ```
 TODO:
 ===============
-support c++11 blocks as callback function
 
 support async dns resolving for async-connection
 
