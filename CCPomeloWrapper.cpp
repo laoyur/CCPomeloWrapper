@@ -258,7 +258,7 @@ void CCPomeloImpl::dispatchNotifyCallbacks()
             user = mNtfUserMap[rst->notify];
             mNtfUserMap.erase(rst->notify);
         }
-#ifdef CCX3
+#if CCX3
         if(user && user->ntfCB)
         {
             CCPomeloNotifyResult result;
@@ -296,7 +296,7 @@ void CCPomeloImpl::dispatchEventCallbacks()
             //connection lost
             stop(); //release data
             
-#ifdef CCX3
+#if CCX3
             if (mDisconnectCB) {
                 mDisconnectCB();
             }
