@@ -68,6 +68,13 @@ CCPomeloNotifyResult::CCPomeloNotifyResult()
 CCPomeloEvent::CCPomeloEvent()
 {
 }
+
+void* workerDestoryPomeloClient(void* client)
+{
+    pc_client_destroy((pc_client_t*)client);
+    return 0;
+}
+
 class CCPomeloImpl : 
 #if CCX3
 public cocos2d::Object
@@ -826,6 +833,7 @@ void CCPomeloImpl::removeAllListeners()
     clearAllPendingEvents();
     pthread_mutex_unlock(&mMutex);
 }
+
 void CCPomeloImpl::stop()
 {
     //CCLog("stop in");
@@ -859,9 +867,11 @@ void CCPomeloImpl::stop()
         }
         else
         {
-            //you should not call pc_client_stop() in main thread
-            //https://github.com/NetEase/pomelo/issues/208
-            pc_client_destroy(mClient);
+            //create a working thread to perform destorying libpomelo client.
+            //the reason to use pthread: sometimes pc_client_destroy() hangs
+            //the main thread if server side does not response correctly.
+            pthread_t t;
+            pthread_create(&t, NULL, workerDestoryPomeloClient, mClient);
         }
         mAsyncConn = NULL;
         mClient = NULL;
