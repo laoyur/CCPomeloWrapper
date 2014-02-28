@@ -6,8 +6,11 @@
 //  A simple libpomelo wrapper for cocos2d-x
 //  
 //  Version history:
-//  0.9 2014-01-26  1.cocos2dx_3.0 && c++11 supported
-//                  2.添加中文注释，方便国内用户快速使用
+//  0.9.1   2014-02-28  临时绕过pc_client_destroy()在某些情况下挂住主线程的bug。
+//                      注意：目前只是一个替代方案，仍旧可能存在内存泄露或未知bug，
+//                      需要官方进一步提升libpomelo的健壮性。
+//  0.9     2014-01-26  1.cocos2dx_3.0 && c++11 supported
+//                      2.添加中文注释，方便国内用户快速使用
 //  < 0.9   2013    first released version
 
 #ifndef __CCPomeloWrapper__
