@@ -69,12 +69,6 @@ CCPomeloEvent::CCPomeloEvent()
 {
 }
 
-void* workerDestoryPomeloClient(void* client)
-{
-    pc_client_destroy((pc_client_t*)client);
-    return 0;
-}
-
 class CCPomeloImpl : 
 #if CCX3
 public cocos2d::Object
@@ -94,7 +88,7 @@ public:
 #if CCX3
     int connectAsnyc(const char* host, int port, const PomeloAsyncConnCallback& callback);
     
-    void setDisconnectedCallback(const std::function<void()>& callback);
+    int setDisconnectedCallback(const std::function<void()>& callback);
     
     int request(const char* route, const std::string& msg, const PomeloReqResultCallback& callback);
     
@@ -104,7 +98,7 @@ public:
 #else
     int connectAsnyc(const char* host, int port, cocos2d::CCObject* pCallbackTarget, PomeloAsyncConnHandler pCallbackSelector);
 
-    void setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector);
+    int setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector);
     
     int request(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloReqResultHandler pCallbackSelector);
     
@@ -144,6 +138,9 @@ private:
     void clearReqResource();
     void clearNtfResource();
     void clearAllPendingEvents();
+    
+    void lock();
+    void unlock();
     
 private:
     CCPomeloStatus      mStatus;
@@ -210,7 +207,7 @@ void CCPomeloImpl::dispatchAsyncConnCallback()
 }
 void CCPomeloImpl::dispatchRequestCallbacks()
 {
-    _PomeloRequestResult* rst = popReqResult();
+    _PomeloRequestResult* rst = popReqResult(mStatus == EPomeloConnected);
     if(rst)
     {
         _PomeloUser* user = NULL;
@@ -255,7 +252,7 @@ void CCPomeloImpl::dispatchRequestCallbacks()
 }
 void CCPomeloImpl::dispatchNotifyCallbacks()
 {
-    _PomeloNotifyResult* rst = popNtfResult();
+    _PomeloNotifyResult* rst = popNtfResult(mStatus == EPomeloConnected);
     if(rst)
     {
         _PomeloUser* user = NULL;
@@ -295,7 +292,7 @@ void CCPomeloImpl::dispatchNotifyCallbacks()
 }
 void CCPomeloImpl::dispatchEventCallbacks()
 {
-    _PomeloEvent* rst = popEvent();
+    _PomeloEvent* rst = popEvent(mStatus == EPomeloConnected);
     if(rst)
     {
         if(rst->event.compare(PC_EVENT_DISCONNECT) == 0)
@@ -409,13 +406,12 @@ _PomeloEvent* CCPomeloImpl::popEvent(bool lock/* = true*/)
 
 void CCPomeloImpl::connectAsnycCallback(pc_connect_t* conn_req, int status)
 {
-    //CCLog("connectAsnycCallback in");
-    
     pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
     
     if(gPomelo->_theMagic->mAsyncConn != conn_req)
     {
-        //this callback should be ignored
+        //conn_req是一个已经被“断开”的连接。
+        //destory the connection
         pc_client_t* client = conn_req->client;
         pc_connect_req_destroy(conn_req);
         
@@ -441,16 +437,59 @@ void CCPomeloImpl::connectAsnycCallback(pc_connect_t* conn_req, int status)
     }
     
     pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
-    //CCLog("connectAsnycCallback out");
 }
 
 void CCPomeloImpl::requestCallback(pc_request_t *request, int status, json_t *docs)
 {
-    //CCLog("requestCallback in");
-    pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
-    
-    if(gPomelo->status() == EPomeloConnected)
+    if(gPomelo->status() == EPomeloStopping)
     {
+        /*
+         EPomeloStopping时，表示此函数是由pc_client_destory()内部触发。
+         此时处于主线程中。request会由libpomelo内部进行释放。
+         */
+        if(gPomelo->_theMagic->mReqUserMap.find(request) != gPomelo->_theMagic->mReqUserMap.end())
+        {
+            char* json = json_dumps(docs, JSON_COMPACT);    //json is NULL
+            _PomeloUser* user = gPomelo->_theMagic->mReqUserMap[request];
+            gPomelo->_theMagic->mReqUserMap.erase(request);
+            
+#if CCX3
+            //here is the good place to perform callback
+            if(user && user->reqCB)
+            {
+                CCPomeloRequestResult result;
+                result.requestRoute = request->route;
+                result.status = status;
+                result.jsonMsg = json ? json : "";
+                
+                user->reqCB(result);
+            }
+#else
+            //here is the good place to perform callback
+            if(user && user->target && user->reqSel)
+            {
+                CCPomeloRequestResult result;
+                result.requestRoute = request->route;
+                result.status = status;
+                result.jsonMsg = json;
+                
+                PomeloReqResultHandler sel = user->reqSel;
+                (user->target->*sel)(result);
+            }
+#endif
+            
+            delete user;
+            
+            //fixme
+            json_decref(request->msg);
+            
+            free(json);
+        }
+    }
+    else    //EPomeloConnected
+    {
+        pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
+        
         char* json = json_dumps(docs, JSON_COMPACT);
         _PomeloRequestResult* rst = new _PomeloRequestResult();
         rst->request = request;
@@ -459,40 +498,61 @@ void CCPomeloImpl::requestCallback(pc_request_t *request, int status, json_t *do
         rst->status = status;
         gPomelo->_theMagic->pushReqResult(rst);
         free(json);
+        
+        pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
     }
-    else
-    {
-        json_decref(request->msg);
-        pc_request_destroy(request);
-    }
-    
-    pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
-    //CCLog("requestCallback out");
 }
 void CCPomeloImpl::notifyCallback(pc_notify_t *ntf, int status)
 {
-    //CCLog("notifyCallback in");
-    pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
-    
-    if(gPomelo->status() == EPomeloConnected)
+    if(gPomelo->status() == EPomeloStopping)
     {
+        /*
+         EPomeloStopping时，表示此函数是由pc_client_destory()内部触发。
+         此时处于主线程中。ntf会由libpomelo内部进行释放。
+         */
+        if(gPomelo->_theMagic->mNtfUserMap.find(ntf) != gPomelo->_theMagic->mNtfUserMap.end())
+        {
+            _PomeloUser* user = gPomelo->_theMagic->mNtfUserMap[ntf];
+#if CCX3
+            if(user && user->ntfCB)
+            {
+                CCPomeloNotifyResult result;
+                result.notifyRoute = ntf->route;
+                result.status = status;
+                
+                user->ntfCB(result);
+            }
+#else
+            if(user && user->target && user->ntfSel)
+            {
+                CCPomeloNotifyResult result;
+                result.notifyRoute = ntf->route;
+                result.status = status;
+                
+                PomeloNtfResultHandler sel = user->ntfSel;
+                (user->target->*sel)(result);
+            }
+#endif
+            delete user;
+            
+            //fixme
+            json_decref(ntf->msg);
+        }
+    }
+    else    //EPomeloConnected
+    {
+        pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
+        
         _PomeloNotifyResult* rst = new _PomeloNotifyResult();
         rst->notify = ntf;
         rst->status = status;
         gPomelo->_theMagic->pushNtfResult(rst);
+        
+        pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
     }
-    else
-    {
-        json_decref(ntf->msg);
-        pc_notify_destroy(ntf);
-    }
-    
-    pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
-    //CCLog("notifyCallback out");
 }
 void CCPomeloImpl::eventCallback(pc_client_t *client, const char *event, void *data)
 {
-    //CCLog("eventCallback in");
     pthread_mutex_lock(&gPomelo->_theMagic->mMutex);
     
     if(gPomelo->status() == EPomeloConnected)
@@ -505,13 +565,12 @@ void CCPomeloImpl::eventCallback(pc_client_t *client, const char *event, void *d
         gPomelo->_theMagic->pushEvent(rst);
         free(json);
     }
-    else
+    else    //EPomeloStopping
     {
-        
+        //EPomeloStopping过程中不响应callback
     }
     
     pthread_mutex_unlock(&gPomelo->_theMagic->mMutex);
-    //CCLog("eventCallback in");
 }
 void CCPomeloImpl::disconnectedCallback(pc_client_t *client, const char *event, void *data)
 {
@@ -558,6 +617,9 @@ CCPomeloStatus CCPomeloImpl::status() const
 
 int CCPomeloImpl::connect(const char* host, int port)
 {
+    if(mStatus == EPomeloStopping)
+        return -1;
+    
     struct sockaddr_in address;
     memset(&address, 0, sizeof(struct sockaddr_in));
     address.sin_family = AF_INET;
@@ -605,6 +667,9 @@ int CCPomeloImpl::connect(const char* host, int port)
 #if CCX3
 int CCPomeloImpl::connectAsnyc(const char* host, int port, const PomeloAsyncConnCallback& callback)
 {
+    if(mStatus == EPomeloStopping)
+        return -1;
+    
     struct sockaddr_in address;
     memset(&address, 0, sizeof(struct sockaddr_in));
     address.sin_family = AF_INET;
@@ -644,9 +709,12 @@ int CCPomeloImpl::connectAsnyc(const char* host, int port, const PomeloAsyncConn
     }
     return ret;
 }
-void CCPomeloImpl::setDisconnectedCallback(const std::function<void()>& callback)
+int CCPomeloImpl::setDisconnectedCallback(const std::function<void()>& callback)
 {
+    if(mStatus != EPomeloConnected)
+        return -1;
     mDisconnectCB = callback;
+    return 0;
 }
 int CCPomeloImpl::request(const char* route, const std::string& msg, const PomeloReqResultCallback& callback)
 {
@@ -777,10 +845,13 @@ int CCPomeloImpl::notify(const char* route, const std::string& msg, cocos2d::CCO
     //json_decref(j);
     return ret;
 }
-void CCPomeloImpl::setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector)
+int CCPomeloImpl::setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector)
 {
+    if(mStatus != EPomeloConnected)
+        return -1;
     mDisconnectCbTarget = pTarget;
     mDisconnectCbSelector = pSelector;
+    return 0;
 }
 int CCPomeloImpl::addListener(const char* event, cocos2d::CCObject* pCallbackTarget, PomeloEventHandler pCallbackSelector)
 {
@@ -836,49 +907,65 @@ void CCPomeloImpl::removeAllListeners()
 
 void CCPomeloImpl::stop()
 {
-    //CCLog("stop in");
     pthread_mutex_lock(&mMutex);
     
-    delete mAsyncConnUser;
-    mAsyncConnUser = NULL;
-    mAsyncConnDispatchPending = false;
-    
-    clearReqResource();
-    clearNtfResource();
-    clearAllPendingEvents();
-    
+    switch (mStatus) {
+        case EPomeloStopped:
+            //do nothing
+            break;
+        case EPomeloStopping:
+            //do nothing
+            break;
+        case EPomeloConnecting:
+        case EPomeloConnected:
+        {
+            CCPomeloStatus status = mStatus;
+            mStatus = EPomeloStopping;  //标记为停止中
+            if(status == EPomeloConnecting)
+            {
+                /*
+                 在libpomelo仍处于连接过程中销毁pc_connect_t或pc_client_t，会导致libuv崩溃。
+                 */
+                //libuv crashes if we destory pc_connect_t or destory
+                //pc_client_t when libpomelo is connecting
+                //so we simply create a new pc_client_t and ignore
+                //the old pc_connect_t
+            }
+            else    //EPomeloConnected
+            {
+                pc_remove_listener(mClient, PC_EVENT_DISCONNECT, disconnectedCallback);
+                /*
+                 注意：pc_client_destroy()内部会触发所有未完成的request/notify的回调。CCPomeloWrapper会将这些回调以【同步方式】扔回给客户端。
+                 */
+                pc_client_destroy(mClient);
+            }
+            
+            mAsyncConn = NULL;
+            mClient = NULL;
+            mStatus = EPomeloStopped;   //重置标记
+            
+            //release resources
+            delete mAsyncConnUser;
+            mAsyncConnUser = NULL;
+            mAsyncConnDispatchPending = false;
+            
+            clearReqResource();
+            clearNtfResource();
+            clearAllPendingEvents();
+            
 #if CCX3
-    CCDirector::getInstance()->getScheduler()->pauseTarget(this);
+            CCDirector::getInstance()->getScheduler()->pauseTarget(this);
 #else
-    CCDirector::sharedDirector()->getScheduler()->pauseTarget(this);
+            CCDirector::sharedDirector()->getScheduler()->pauseTarget(this);
 #endif
-    
-    
-    if(mClient)
-    {
-        pc_remove_listener(mClient, PC_EVENT_DISCONNECT, disconnectedCallback);
-        
-        if(mStatus == EPomeloConnecting)
-        {
-            //fixme: libuv crashes if we destory pc_connect_t or destory
-            //pc_client_t when libpomelo is connecting
-            //so we simply create a new pc_client_t and ignore
-            //the old pc_connect_t
+            
+            break;
         }
-        else
-        {
-            //create a working thread to perform destorying libpomelo client.
-            //the reason to use pthread: sometimes pc_client_destroy() hangs
-            //the main thread if server side does not response correctly.
-            pthread_t t;
-            pthread_create(&t, NULL, workerDestoryPomeloClient, mClient);
-        }
-        mAsyncConn = NULL;
-        mClient = NULL;
+        default:
+            break;
     }
-    mStatus = EPomeloStopped;
+
     pthread_mutex_unlock(&mMutex);
-    //CCLog("stop out");
 }
 
 void CCPomeloImpl::clearReqResource()
@@ -942,6 +1029,17 @@ void CCPomeloImpl::clearAllPendingEvents()
     queue<_PomeloEvent*> empty;
     swap(mEventQueue, empty);
 }
+
+void CCPomeloImpl::lock()
+{
+    
+}
+
+void CCPomeloImpl::unlock()
+{
+    
+}
+
 //============================================================
 CCPomeloWrapper* CCPomeloWrapper::getInstance()
 {
@@ -971,9 +1069,9 @@ int CCPomeloWrapper::connectAsnyc(const char* host, int port, const PomeloAsyncC
 {
     return _theMagic->connectAsnyc(host, port, callback);
 }
-void CCPomeloWrapper::setDisconnectedCallback(const std::function<void()>& callback)
+int CCPomeloWrapper::setDisconnectedCallback(const std::function<void()>& callback)
 {
-    _theMagic->setDisconnectedCallback(callback);
+    return _theMagic->setDisconnectedCallback(callback);
 }
 int CCPomeloWrapper::request(const char* route, const std::string& msg, const PomeloReqResultCallback& callback)
 {
@@ -992,9 +1090,9 @@ int CCPomeloWrapper::connectAsnyc(const char* host, int port, cocos2d::CCObject*
 {
     return _theMagic->connectAsnyc(host, port, pCallbackTarget, pCallbackSelector);
 }
-void CCPomeloWrapper::setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector)
+int CCPomeloWrapper::setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector)
 {
-    _theMagic->setDisconnectedCallback(pTarget, pSelector);
+    return _theMagic->setDisconnectedCallback(pTarget, pSelector);
 }
 
 int CCPomeloWrapper::request(const char* route, const std::string& msg, cocos2d::CCObject* pCallbackTarget, PomeloReqResultHandler pCallbackSelector)
