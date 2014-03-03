@@ -6,6 +6,7 @@
 //  A simple libpomelo wrapper for cocos2d-x
 //  
 //  Version history:
+//  0.9.2   2014-03-03  修复0.9版本中一个导致死锁的bug
 //  0.9.1   2014-02-28  临时绕过pc_client_destroy()在某些情况下挂住主线程的bug。
 //                      注意：目前只是一个替代方案，仍旧可能存在内存泄露或未知bug，
 //                      需要官方进一步提升libpomelo的健壮性。
@@ -28,9 +29,20 @@
 
 enum CCPomeloStatus
 {
-    EPomeloStopped,
-    EPomeloConnecting,
-    EPomeloConnected
+    EPomeloStopped = 0,     //连接已经断开
+    EPomeloConnecting = 1,  //正在连接中
+    EPomeloConnected = 2,   //连接已经确立
+    
+    /*正在断开连接。在此状态下，CCPomeloWrapper的所有client api都会被忽略。
+    出现此状态的一个典型场景是：主动或被动的stop()调用，使得所有未完成的request/notify
+    的回调得以触发，在这些回调中发起的所有的client api的调用从逻辑上都是无效的。
+     This status means CCPomeloWrapper is shutting down.
+     Pending request/notify callbacks will be fired if stop() called by
+     user or CCPomeloWrapper itself, and then the status will change to 
+     EPomeloStopped.
+     You must NOT call any client api until the status becomes EPomeloStopped.
+    */
+    EPomeloStopping = 3
 };
 
 
@@ -97,7 +109,7 @@ public:
     static CCPomeloWrapper* getInstance();
     ~CCPomeloWrapper();
     
-public:
+public: //client APIs
     //get the current connection status
     //获取当前连接状态
     CCPomeloStatus status() const;
@@ -120,11 +132,11 @@ public:
     void stop();
     
 #if CCX3
-    void setDisconnectedCallback(const std::function<void()>& callback);
+    int setDisconnectedCallback(const std::function<void()>& callback);
 #else
     //callback when connection lost
     //监控连接丢失事件
-    void setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector);
+    int setDisconnectedCallback(cocos2d::CCObject* pTarget, cocos2d::SEL_CallFunc pSelector);
 #endif
     
 #if CCX3
