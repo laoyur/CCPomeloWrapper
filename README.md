@@ -83,7 +83,7 @@ Great thanks to https://github.com/xdxttt/CCPomelo
                                     
                                     pomelo->request("chat.chatHandler.send", writer.write(msg), [=](const CCPomeloRequestResult& sendResult){
                                         
-                                        //CCLOG("msg sent");
+                                        CCLOG("msg sent result:%d", sendResult.status);
                                         
                                     });
                                     
