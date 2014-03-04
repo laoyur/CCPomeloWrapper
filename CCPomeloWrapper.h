@@ -6,6 +6,7 @@
 //  A simple libpomelo wrapper for cocos2d-x
 //  
 //  Version history:
+//  0.9.3   2014-03-04  修复0.9.2在cocos2dx-2.x中stop()可能导致崩溃的bug
 //  0.9.2   2014-03-03  修复0.9版本中一个导致死锁的bug
 //  0.9.1   2014-02-28  临时绕过pc_client_destroy()在某些情况下挂住主线程的bug。
 //                      注意：目前只是一个替代方案，仍旧可能存在内存泄露或未知bug，
