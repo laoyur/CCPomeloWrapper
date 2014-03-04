@@ -471,7 +471,7 @@ void CCPomeloImpl::requestCallback(pc_request_t *request, int status, json_t *do
                 CCPomeloRequestResult result;
                 result.requestRoute = request->route;
                 result.status = status;
-                result.jsonMsg = json;
+                result.jsonMsg = json ? json : "";
                 
                 PomeloReqResultHandler sel = user->reqSel;
                 (user->target->*sel)(result);
